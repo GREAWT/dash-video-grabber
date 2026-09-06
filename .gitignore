@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*.log
+
+# 下载成品/测试/临时文件(不发布)
+downloads/
+_pkg/
+
+# 系统
+.DS_Store
+Thumbs.db
