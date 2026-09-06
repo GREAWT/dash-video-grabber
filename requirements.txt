@@ -1,0 +1,6 @@
+# Python 3.9+
+# 核心: 视频网站解析与下载引擎
+yt-dlp>=2025.01.01
+
+# 可选: 找不到系统 ffmpeg 时, 自动用它内置的 ffmpeg 完成 DASH 合并
+imageio-ffmpeg>=0.5.0
