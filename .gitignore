@@ -1,11 +1,35 @@
-# Python
+# Python 缓存
 __pycache__/
 *.py[cod]
 *.log
 
-# 下载成品/测试/临时文件(不发布)
+# ★ 下载成品: 整个目录排除(含视频/音频任何格式)
 downloads/
+*.mp4
+*.mkv
+*.webm
+*.flv
+*.avi
+*.mov
+*.mp3
+*.m4a
+*.aac
+*.wav
+*.flac
+*.part
+*.ytdl
+*.temp
+
+# ★ Cookie / 登录凭证: 绝不入库
+cookies*.txt
+*cookies.txt
+*_cookies.txt
+
+# 测试与打包残留
 _pkg/
+_install/
+*.whl
+*.zip
 
 # 系统
 .DS_Store
