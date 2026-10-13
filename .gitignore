@@ -20,6 +20,21 @@ downloads/
 *.ytdl
 *.temp
 
+# 其它流媒体/分段格式(yt-dlp 可能产生)
+*.ts
+*.f4v
+*.m4s
+*.3gp
+*.ogg
+*.opus
+*.flv
+
+# 字幕/简介等附带文件
+*.srt
+*.vtt
+*.ass
+*.info.json
+*.description
 # ★ Cookie / 登录凭证: 绝不入库
 cookies*.txt
 *cookies.txt
