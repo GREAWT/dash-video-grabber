@@ -34,6 +34,13 @@ FONT = ("Microsoft YaHei UI", 10)
 FONT_B = ("Microsoft YaHei UI", 10, "bold")
 COOKIE_CHOICES = ["不借用（免登录）"] + core._cookie_browsers()
 
+# 画面清理: 预设与方式的中文标签
+CLEAN_PRESETS_LABELS = {
+    "top-right": "右上角", "top-left": "左上角",
+    "bottom-right": "右下角", "bottom-left": "左下角", "custom": "自定义",
+}
+CLEAN_METHOD_LABELS = {"delogo": "模糊填充", "box": "色块遮盖", "crop": "裁剪"}
+
 
 class DashApp:
     def __init__(self, root):
@@ -43,6 +50,10 @@ class DashApp:
         self.formats = []          # 当前视频的格式列表 (与 Listbox 行一一对应)
         self.outdir = core.default_outdir()
         self._cancel = False        # 停止标志
+        self._last_download = None  # 最近下载完成的文件(用于"送去画面清理")
+        self._preview_sig = None    # 最近一次预览的参数签名
+        self._preview_mode = False  # 预览任务中(看门狗跳过卡死检测)
+        self._worker = None         # 当前后台线程(用于关窗等待)
         self._dl_start = 0.0        # 本次下载开始时间
         self._last_activity = 0.0   # 最近进度/日志时间(卡死检测用)
         self._hint_at = 0.0         # 60秒无进度提示时间戳
@@ -50,8 +61,9 @@ class DashApp:
         self._watch_seen = None     # 文件检测: (路径, 大小)
         self._done_notified = False # 完成通知是否已发(防重复)
 
-        root.title("DASH 视频下载器 (yt-dlp)")
-        root.geometry("980x680")
+        root.title("DASH 视频下载器 v" + core.__version__ + " (yt-dlp)")
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.geometry("1000x800")
         root.minsize(860, 600)
 
         pad = {"padx": 8, "pady": 4}
@@ -89,6 +101,44 @@ class DashApp:
         self.btn_cf = ttk.Button(f1b, text="选择Cookie文件", command=self.choose_cookie_file)
         self.btn_cf.pack(side="left")
         self.btn_cf.configure(state="disabled")
+        ttk.Label(f1b, text="※ 仅本次会话使用, 不写入磁盘",
+                  font=("Microsoft YaHei UI", 9), foreground="#8a8a8a").pack(side="left", padx=8)
+
+        # ---- 画面清理(独立功能, 不经过下载链路, 不影响下载画质) ----
+        f1c = ttk.LabelFrame(self.root, text="画面清理(去水印/去角标) —— 自主上传视频处理, 原文件保留")
+        f1c.pack(fill="x", padx=8, pady=4)
+        row1 = ttk.Frame(f1c); row1.pack(fill="x", padx=6, pady=3)
+        self.btn_pick_clean = ttk.Button(row1, text="选择视频文件…", command=self.choose_clean_files)
+        self.btn_pick_clean.pack(side="left")
+        self.clean_files = []
+        self.clean_files_label = ttk.Label(row1, text="未选择文件", font=FONT)
+        self.clean_files_label.pack(side="left", padx=8)
+        self.btn_preview_clean = ttk.Button(row1, text="预览对比", command=self.do_preview_clean)
+        self.btn_preview_clean.pack(side="left", padx=4)
+        self.btn_run_clean = ttk.Button(row1, text="开始清理", command=self.do_clean_local)
+        self.btn_run_clean.pack(side="left", padx=4)
+        ttk.Button(row1, text="打开输出文件夹", command=self.open_clean_outdir).pack(side="left", padx=4)
+
+        row2 = ttk.Frame(f1c); row2.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(row2, text="区域:", font=FONT).pack(side="left")
+        self.clean_preset_var = tk.StringVar(value=CLEAN_PRESETS_LABELS["top-right"])
+        ttk.Combobox(row2, textvariable=self.clean_preset_var,
+                     values=list(CLEAN_PRESETS_LABELS.values()),
+                     state="readonly", width=8, font=FONT).pack(side="left", padx=4)
+        defaults = [("X", "clean_x", "1666"), ("Y", "clean_y", "39"),
+                    ("宽", "clean_w", "205"), ("高", "clean_h", "91")]
+        for label, attr, dv in defaults:
+            ttk.Label(row2, text=label, font=FONT).pack(side="left", padx=(6, 0))
+            var = tk.StringVar(value=dv)
+            setattr(self, attr, var)
+            ttk.Entry(row2, textvariable=var, width=5, font=FONT).pack(side="left", padx=2)
+        ttk.Label(row2, text="方式:", font=FONT).pack(side="left", padx=(8, 0))
+        self.clean_method_var = tk.StringVar(value=CLEAN_METHOD_LABELS["delogo"])
+        ttk.Combobox(row2, textvariable=self.clean_method_var,
+                     values=list(CLEAN_METHOD_LABELS.values()),
+                     state="readonly", width=8, font=FONT).pack(side="left", padx=4)
+        ttk.Label(row2, text="※ 仅处理你有权使用的素材", font=("Microsoft YaHei UI", 9),
+                  foreground="#8a8a8a").pack(side="left", padx=8)
 
         # 格式列表
         f2 = ttk.Frame(self.root); f2.pack(fill="both", expand=True, padx=8, pady=2)
@@ -115,6 +165,9 @@ class DashApp:
         self.btn_stop.configure(state="disabled")
         self.btn_open = ttk.Button(f3, text="打开下载文件夹", command=self.open_outdir)
         self.btn_open.pack(side="left", padx=6)
+        self.btn_send_clean = ttk.Button(f3, text="送去画面清理", command=self.send_to_clean)
+        self.btn_send_clean.pack(side="left", padx=6)
+        self.btn_send_clean.configure(state="disabled")
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(f3, textvariable=self.status_var, font=FONT_B, foreground="#1a7f37").pack(side="right")
 
@@ -153,6 +206,17 @@ class DashApp:
         except Exception:
             pass
 
+    def open_clean_outdir(self):
+        if self.clean_files:
+            d = os.path.dirname(self.clean_files[0])
+        else:
+            d = self.dir_var.get().strip() or self.outdir
+        os.makedirs(d, exist_ok=True)
+        try:
+            os.startfile(d)
+        except Exception:
+            pass
+
     def cookie_browser(self):
         c = self.cookie_var.get()
         return None if c == COOKIE_CHOICES[0] else c
@@ -174,10 +238,166 @@ class DashApp:
             return self.cf_var.get().strip() or None
         return None
 
+    # ---------------- 画面清理(独立功能) ----------------
+    def _clean_params(self):
+        """把界面选择转成 (rect, preset, method)."""
+        label = self.clean_preset_var.get()
+        preset = {v: k for k, v in CLEAN_PRESETS_LABELS.items()}.get(label, "top-right")
+        rect = None
+        if preset == "custom":
+            try:
+                rect = (int(self.clean_x.get()), int(self.clean_y.get()),
+                        int(self.clean_w.get()), int(self.clean_h.get()))
+            except Exception:
+                rect = (0, 0, 0, 0)
+        method = {v: k for k, v in CLEAN_METHOD_LABELS.items()}.get(
+            self.clean_method_var.get(), "delogo")
+        return rect, preset, method
+
+    def choose_clean_files(self):
+        files = filedialog.askopenfilenames(
+            title="选择要清理画面的视频",
+            filetypes=[("视频文件", "*.mp4 *.mkv *.webm *.flv *.mov *.avi"),
+                       ("所有文件", "*.*")])
+        if files:
+            self.clean_files = list(files)
+            self._preview_sig = None
+            self.clean_files_label.configure(text="已选 %d 个文件" % len(files))
+            self.log_line("已选择 %d 个视频用于画面清理" % len(files))
+
+    def do_preview_clean(self):
+        if self.working:
+            return
+        src = self.clean_files[0] if self.clean_files else ""
+        if not src:
+            src = filedialog.askopenfilename(
+                title="选择视频用于预览",
+                filetypes=[("视频文件", "*.mp4 *.mkv *.webm *.flv *.mov *.avi")])
+            if not src:
+                return
+        rect, preset, method = self._clean_params()
+        self.set_working(True)
+        self._preview_mode = True   # 预览是抽帧操作, 不参与卡死检测
+        self.status_var.set("生成预览对比图...")
+        self._worker = threading.Thread(target=self._preview_clean_worker,
+                                        args=(src, rect, preset, method), daemon=True)
+        self._worker.start()
+
+    def _preview_clean_worker(self, src, rect, preset, method):
+        try:
+            cmp_path = core.preview_clean(src, rect=rect, preset=preset, method=method,
+                                          out_dir=core.default_clean_outdir(),
+                                          log_hook=self._log_hook)
+            self._preview_sig = (tuple(self.clean_files), rect, preset, method)
+            self.q.put(("clean_preview", cmp_path))
+        except Exception as e:
+            self.q.put(("error", "预览失败: %s" % e))
+        finally:
+            self._preview_mode = False
+
+    def do_clean_local(self):
+        if self.working:
+            return
+        if not self.clean_files:
+            messagebox.showwarning("提示", "请先点【选择视频文件…】添加要处理的视频。")
+            return
+        rect, preset, method = self._clean_params()
+        sig = (tuple(self.clean_files), rect, preset, method)
+        warned = (self._preview_sig == sig)
+        msg = ("即将开始全片画面清理：\n\n"
+               "• 将重新编码为 H.264+AAC，存在轻微画质损失\n"
+               "• 原文件保留，输出到 cleaned 目录\n")
+        if not warned:
+            msg += "• 你还没有为当前参数生成预览对比图，建议先【预览对比】确认\n"
+        msg += "\n确定继续吗？"
+        if not messagebox.askyesno("确认画面清理", msg):
+            return
+        self.set_working(True)
+        self.progress.configure(mode="determinate")
+        self.progress["value"] = 0
+        self.pct_var.set("0%")
+        self.status_var.set("画面清理中...")
+        self.log_line("输出目录: %s" % core.default_clean_outdir())
+        self._worker = threading.Thread(target=self._clean_local_worker,
+                                        args=(list(self.clean_files), rect, preset, method),
+                                        daemon=True)
+        self._worker.start()
+
+    def _clean_local_worker(self, files, rect, preset, method):
+        ok, fail = 0, 0
+        for i, src in enumerate(files, 1):
+            if self._cancel:
+                break
+            try:
+                self.q.put(("clean_start", (i, len(files), os.path.basename(src))))
+
+                def prog(p, base=i - 1, _n=len(files), _i=i):
+                    overall = (base + p / 100.0) / _n * 100.0
+                    self.q.put(("pct", overall,
+                                "画面清理 %d/%d  %.0f%%" % (_i, _n, p)))
+
+                core.clean_video(src, rect=rect, preset=preset, method=method,
+                                 out_dir=core.default_clean_outdir(),
+                                 log_hook=self._log_hook, progress_hook=prog,
+                                 cancel_check=lambda: self._cancel)
+                ok += 1
+            except Exception as e:
+                if self._cancel:
+                    break
+                fail += 1
+                self.q.put(("log", "处理失败 %s: %s" % (os.path.basename(src), e)))
+        if self._cancel:
+            self.q.put(("stopped", "已停止画面清理"))
+        else:
+            self.q.put(("clean_done", (ok, fail)))
+
+    def send_to_clean(self):
+        """把最近下载完成的视频送入画面清理工具(不自动处理)."""
+        if not self._last_download or not os.path.isfile(self._last_download):
+            messagebox.showwarning("提示", "还没有可送入的视频，请先下载一个视频。")
+            return
+        self.clean_files = [self._last_download]
+        self._preview_sig = None
+        self.clean_files_label.configure(text="已选 1 个文件")
+        self.log_line("已将下载的视频送入画面清理: %s" % os.path.basename(self._last_download))
+        self.log_line("[注意] 画面清理需全片重编码(H.264+AAC), 会有轻微画质损失; 原文件保留。")
+        self.log_line("请先点【预览对比】确认区域, 再点【开始清理】。")
+
+    def on_close(self):
+        """关闭窗口: 通知取消并等待 ffmpeg 被 kill(最多 3 秒)."""
+        self._cancel = True
+        deadline = time.time() + 3.0
+
+        def _wait():
+            w = getattr(self, "_worker", None)
+            if w is not None and w.is_alive() and time.time() < deadline:
+                self.root.after(100, _wait)
+                return
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
+        _wait()
+
     def set_working(self, flag):
         self.working = flag
-        for b in (self.btn_parse, self.btn_best, self.btn_sel, self.btn_audio):
+        if flag:
+            # 每次开始新任务都要刷新活动时间, 否则看门狗会把"上次操作的旧时间"
+            # 当成 90 秒无活动而误杀当前任务
+            self._last_activity = time.time()
+            self._hint_at = 0.0
+            self._stop_at = None
+            self._cancel = False
+            self._dl_start = time.time()
+            self._watch_seen = None
+            self._done_notified = False
+        for b in (self.btn_parse, self.btn_best, self.btn_sel, self.btn_audio,
+                  self.btn_pick_clean, self.btn_preview_clean, self.btn_run_clean,
+                  self.btn_send_clean):
             b.configure(state="disabled" if flag else "normal")
+        if not flag and not self._last_download:
+            self.btn_send_clean.configure(state="disabled")
         self.btn_stop.configure(state="normal" if flag else "disabled")
 
     # ---------------- 解析 ----------------
@@ -251,8 +471,8 @@ class DashApp:
         cfile = self.cookie_file_path()
 
         if mode == "best":
-            spec = "bv*+ba/b"
-            tag = "最佳画质(自动合并)"
+            spec = core.BEST_FORMAT
+            tag = "最佳画质(优先 H.264 高码率, 自动合并)"
         elif mode == "selected":
             sel = self.listbox.curselection()
             if not sel:
@@ -277,7 +497,7 @@ class DashApp:
         if browser:
             self.log_line("借用浏览器: %s (登录态, 若报错请先关闭该浏览器)" % browser)
         if cfile:
-            self.log_line("使用Cookie文件: %s" % cfile)
+            self.log_line("使用Cookie文件: %s" % os.path.basename(cfile))
         self._cancel = False
         self._dl_start = time.time()
         self._last_activity = time.time()
@@ -409,6 +629,28 @@ class DashApp:
             txt = str(payload).lstrip("\r\n ").strip()
             if txt:
                 self.log_line(txt[:400])
+        elif kind == "clean_start":
+            i, n, name = payload
+            self.log_line("[%d/%d] 开始处理: %s" % (i, n, name))
+        elif kind == "clean_preview":
+            self.set_working(False)
+            self.status_var.set("预览已生成")
+            self.log_line("预览对比图(上:处理前 / 下:处理后): %s" % payload)
+            self.log_line("[提示] 若对比图上下看不出角标差异, 说明该视频可能无需清理。")
+            try:
+                os.startfile(payload)
+            except Exception:
+                pass
+        elif kind == "clean_done":
+            ok, fail = payload
+            self.set_working(False)
+            self.progress.configure(mode="determinate")
+            self.progress["value"] = 100
+            self.pct_var.set("100%")
+            self.status_var.set("完成 ✓")
+            self.log_line("画面清理结束: 成功 %d 个 / 失败 %d 个" % (ok, fail))
+            self.log_line("输出文件为同目录下的 *_clean.mp4, 原文件未改动。")
+            self.root.bell()
         elif kind == "done":
             if self._done_notified:
                 return   # 已由文件检测或前次事件通知过, 忽略重复
@@ -424,11 +666,13 @@ class DashApp:
             self.status_var.set("完成 ✓")
             newest = self._newest_media(outdir)
             if newest:
+                self._last_download = newest
+                self.btn_send_clean.configure(state="normal")
                 self.log_line("下载完成! 文件: %s (%.1f MB)" % (
                     os.path.basename(newest), os.path.getsize(newest) / 1048576.0))
             else:
                 self.log_line("下载完成! 文件保存在: %s" % outdir)
-            self.log_line("点上方【打开下载文件夹】可查看文件。")
+            self.log_line("点【送去画面清理】可把该文件填入清理工具(处理需手动触发)。")
             self.root.bell()
         elif kind == "stopped":
             self.set_working(False)
@@ -444,6 +688,12 @@ class DashApp:
         elif kind == "error":
             msg = payload
             self.log_line(msg)
+            try:
+                hint = core.friendly_error_hint(msg)
+                if hint:
+                    self.log_line("[提示] " + hint)
+            except Exception:
+                pass
             self.set_working(False)
             self.status_var.set("出错")
             if getattr(self, "_merging", False):
@@ -503,7 +753,11 @@ class DashApp:
         """卡死检测 + 停止兜底 + 文件落盘自动确认完成."""
         if not self.working:
             return
+        if getattr(self, "_preview_mode", False):
+            return   # 预览任务不参与卡死检测(抽帧天然短, 且无进度回调)
         now = time.time()
+        if not getattr(self, "_last_activity", 0):
+            self._last_activity = now
         # 0) 工作线程已结束但没收到事件 → 立即自动恢复(最强保险)
         worker = getattr(self, "_worker", None)
         if worker is not None and not worker.is_alive():
