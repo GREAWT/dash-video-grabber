@@ -180,7 +180,7 @@ def extract_url(text):
     """从可能混入标题文字的输入里提取真正的视频链接.
 
     B站等平台的"复制链接"常会附带视频标题, 例如:
-        https://【示例标题】 https://www.bilibili.com/video/BV1xx411c7mD/?...
+        https://【示例标题】 https://www.bilibili.com/video/BV1xxxxxxxxx/?...
     这里自动取出其中真正合法的 URL; 输入本身干净时原样返回.
     返回 (clean_url, 是否发生过清理)
     """
