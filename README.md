@@ -76,8 +76,8 @@ winget install Gyan.FFmpeg
 
 > 装完**重启终端**验证：ffmpeg -version
 
-> **本机已装好（无需操作）**：本工具内置自动方案——系统找不到 ffmpeg 时，
-> 会自动使用随 Python 安装的 imageio-ffmpeg 内置 ffmpeg 完成 DASH 合并。
+> **提示**：如果系统找不到 ffmpeg，本工具会自动使用随 Python 安装的
+> imageio-ffmpeg 内置 ffmpeg 完成 DASH 合并，无需手动配置。
 > 若需要 ffprobe 等完整功能，可再运行 winget install Gyan.FFmpeg。
 
 ## 图形界面用法
