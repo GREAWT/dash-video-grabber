@@ -49,3 +49,8 @@ _install/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 显卡驱动日志 / 清理输出目录
+NVIDIA Corporation/
+NVIDIA*/
+cleaned/
